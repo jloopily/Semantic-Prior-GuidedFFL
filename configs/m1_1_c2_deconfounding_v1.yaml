@@ -1,0 +1,29 @@
+# M1.1-v1.0; validation-only exploratory audit, not a rescue of M1 or official test.
+base_config: frozen_v5_1.yaml
+m1_config: m1_static_geometry_pilot_v1.yaml
+m1_output_dir: ../results/m1_static_geometry_pilot_v1
+output_dir: ../results/m1_1_c2_deconfounding_v1/r01
+run_id: r01
+seed: 20260929
+official_test_locked: true
+protocol:
+  namespace: m1_1_c2_deconfounding_v1
+  version: M1.1-v1.0
+  scorer: C2
+  k: 20
+  grid: [28, 28]
+  image_size: [448, 448]
+  distance: euclidean_float32_exact_indexflatl2
+  full_candidates: 50176
+  restricted_candidates: 64
+  gallery_videos: 64
+  random_gallery_seeds: [20260929, 20260930, 20260931, 20260932, 20260933]
+  compressions: [c23, c40]
+  manipulations: [Deepfakes, Face2Face, FaceSwap, NeuralTextures]
+  threshold_quantile: 0.99
+  threshold_method: linear
+  threshold_comparison: greater_than
+  bootstrap_unit: source_group
+  bootstrap_replicates: 2000
+  bootstrap_seed: 20260929
+  official_test_locked: true

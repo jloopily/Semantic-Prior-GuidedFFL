@@ -1,0 +1,51 @@
+# M1-limited-v1.0: preregistered validation-only static fake-localization pilot.
+# This file is independent of v5.5/Gate B/T0/M0 and never authorizes official test.
+base_config: frozen_v5_1.yaml
+output_dir: ../results/m1_static_geometry_pilot_v1
+upstream_t0_dir: ../results/t0_multiframe_v1
+seed: 20260927
+official_test_locked: true
+validation_previously_used_in_t0: true
+
+protocol:
+  namespace: m1_static_geometry_pilot_v1
+  version: M1-limited-v1.0
+  query_budget: T3_frozen
+  query_positions: [0.25, 0.50, 0.75]
+  gallery_real_only: true
+  gallery_train_videos: 64
+  gallery_tokens: 50176
+  k: 20
+  distance: euclidean_float32_exact_indexflatl2
+  score_map_grid: [28, 28]
+  score_map_size: [448, 448]
+  score_map_align_corners: false
+  score_map_postprocess: none
+  valid_pixel_domain: all_448x448_crop_pixels_inherited_from_t0
+  threshold_quantile: 0.99
+  threshold_method: linear
+  threshold_comparison: greater_than
+  bootstrap_replicates: 2000
+  bootstrap_confidence_level: 0.95
+  bootstrap_seed: 20260927
+  diagnostics_group_limit: 16
+  diagnostics_gallery_sizes: [16, 32, 48, 64]
+
+scorers:
+  primary: r_k
+  fixed_secondary: [mean_r, C2]
+  historical: CIR_LID
+
+compressions: [c23, c40]
+manipulations: [Deepfakes, Face2Face, FaceSwap, NeuralTextures]
+
+conditional_diagnostics:
+  enabled: true
+  seed: 20260927
+  max_source_groups: 16
+  gallery_sizes: [16, 32, 48, 64]
+  normalized_features: true
+  spatial_controls: [same_token_index, matched_count_unrestricted]
+
+reports:
+  case_count: 4

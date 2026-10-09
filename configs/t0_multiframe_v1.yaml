@@ -1,0 +1,26 @@
+# Exploratory protocol; never overrides frozen_v5_1.yaml.
+base_config: frozen_v5_1.yaml
+output_dir: ../results/t0_multiframe_v1
+seed: 20260926
+# Preserve the frozen frame rule; Python round() uses different tie handling.
+frame_rounding: half_up
+frame_budgets:
+  T1_center: [0.50]
+  T3_frozen: [0.25, 0.50, 0.75]
+  T5_uniform: [0.10, 0.30, 0.50, 0.70, 0.90]
+  T9_uniform: [0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
+methods: [arithmetic_multi_neighbor, CIR_LID]
+compressions: [c23, c40]
+threshold:
+  calibration_budget: T3_frozen
+  compression: c23
+  real_only: true
+  quantile: 0.99
+  numpy_method: linear
+cohort_policy: complete_union_all_budgets_and_compressions
+bootstrap:
+  replicates: 2000
+  confidence_level: 0.95
+temporal_maps: skip_unverified_correspondence
+# Directional evidence only; no automatic T1 approval with unresolved diagnostics.
+decision_policy: report_paired_ci_and_require_manual_confound_review

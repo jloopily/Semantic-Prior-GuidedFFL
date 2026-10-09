@@ -1,0 +1,23 @@
+# M0-v1: independent real-only static manifold audit.
+# This configuration never authorizes fake/test reads and never changes v5.5.
+base_config: frozen_v5_1.yaml
+output_dir: ../results/m0_manifold_audit_v1
+seed: 20260927
+split: validation
+query_frame_position: 0.50
+compressions: [c23, c40]
+spatial_grid: [28, 28]
+num_tokens_per_video_for_audit: 128
+sampling_rule: linspace_0_783_round_deduplicate
+k_primary: 20
+k_sensitivity: [10, 20, 40]
+eps: 1.0e-12
+query_batch_size: 4096
+gallery_resampling:
+  seeds: [11, 23, 37, 41, 53]
+  fraction: 0.80
+null_control:
+  seeds: [101, 103, 107, 109, 113]
+bootstrap:
+  replicates: 2000
+  confidence_level: 0.95

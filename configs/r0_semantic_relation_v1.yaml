@@ -1,0 +1,113 @@
+# Frozen R0 semantic-relation oracle diagnostic. Train-only, Face2Face c23.
+# This config is independent of all prior CIR-LID/T0/M0/M1/M1.1 configs.
+protocol:
+  namespace: r0_semantic_relation_v1
+  version: R0-semantic-relation-v1.0
+  split: train
+  manipulation: Face2Face
+  compression: c23
+  seed: 20260930
+  bootstrap_seed: 20260930
+  official_test_locked: true
+  oracle_paired_target_real: true
+  deployable_detector: false
+
+holdout:
+  enabled: true
+  fraction: 0.30
+  seed: 20260930
+  decision_partition: holdout
+
+paths:
+  ffpp_root: ../data/raw/ffpp
+  split_files:
+    train: ../third_party/FaceForensics/dataset/splits/train.json
+    validation: ../third_party/FaceForensics/dataset/splits/val.json
+    test: ../third_party/FaceForensics/dataset/splits/test.json
+  dinov3_repo: ../dinov3_dl/repo/dinov3
+  dinov3_weights: ../weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
+  crops: ../data/crops/r0_semantic_relation_v1
+  masks: ../data/masks/r0_semantic_relation_v1
+  features: ../features/r0_semantic_relation_v1
+  results: ../results
+  output_dir: ../results/r0_semantic_relation_v1
+
+input:
+  size: 448
+  color: RGB
+  imagenet_mean: [0.485, 0.456, 0.406]
+  imagenet_std: [0.229, 0.224, 0.225]
+  test_time_augmentation: false
+
+face_crop:
+  detector: dlib_hog
+  detector_source: original_target_c23_only
+  upsample_primary: 1
+  upsample_retry: 2
+  square_scale: 1.3
+  padding: reflection
+  image_resize: bilinear_antialias
+  mask_resize: nearest
+  mask_binarization: nonzero
+
+backbone:
+  implementation: official_facebookresearch_dinov3
+  architecture: dinov3_vitb16
+  weights: LVD-1689M
+  frozen: true
+  block_one_based: 6
+  api_n: [5]
+  norm: true
+  reshape: false
+  extra_l2_normalization: false
+  feature_dtype_on_disk: float32
+
+features:
+  expected_patch_grid: [28, 28]
+  expected_tokens_per_frame: 784
+  expected_dimension: 768
+
+sampling:
+  frame_fractions: [0.25, 0.50, 0.75]
+
+mediapipe:
+  package: mediapipe
+  solution: Tasks Face Landmarker
+  running_mode: IMAGE
+  asset_path: ../assets/mediapipe/face_landmarker.task
+  asset_sha256: 64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff
+  asset_source: official_mediapipe_tasks_asset_only
+  num_faces: 2
+  min_face_detection_confidence: 0.5
+  min_face_presence_confidence: 0.5
+  min_tracking_confidence: 0.5
+
+regions:
+  mouth_polygon: official_outer_lip_ordered_loop
+  perioral_ring_radius: 12
+  cheek_definition: fixed_face_clipped_side_quadrilaterals_excluding_eyes_mouth_ring
+  token_mapping: area_fraction_448_to_28
+  empty_region: record_failure_do_not_substitute_full_face
+
+statistics:
+  primary_domain: full_face_valid_domain
+  planned_secondary_domain: mouth_and_perioral_conditioned
+  bootstrap_replicates: 2000
+  confidence_level: 0.95
+  grouping: source_video_connected_component
+  ap_all_zero_mask: undefined
+  ap_all_one_mask: undefined
+  score_threshold: none
+
+quality:
+  max_evaluation_exception_fraction: 0.05
+  min_strict_pair_fraction: 0.90
+  min_evaluable_pair_fraction: 0.80
+  min_target_real_single_face_fraction: 0.90
+  min_holdout_independent_components: 5
+  min_evaluable_frames_per_video: 3
+
+runtime:
+  device: cuda
+  batch_size: 8
+  progress_every: 250

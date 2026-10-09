@@ -1,0 +1,143 @@
+experiment:
+  name: cirlid_v5_5
+  seed: 20260919
+
+paths:
+  ffpp_root: ../data/raw/ffpp
+  # Server-verified location: repo is kept outside the project checkout.
+  dinov3_repo: ../../dinov3_dl/repo/dinov3
+  dinov3_weights: ../weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
+  manifests: ../data/manifests
+  crops: ../data/crops
+  masks: ../data/masks
+  features: ../features
+  indices: ../indices
+  results: ../results
+  environment: ../env
+
+input:
+  size: 448
+  color: RGB
+  imagenet_mean: [0.485, 0.456, 0.406]
+  imagenet_std: [0.229, 0.224, 0.225]
+  test_time_augmentation: false
+
+face_crop:
+  detector: dlib_hog
+  detector_source: original_target_c23_only
+  upsample_primary: 1
+  upsample_retry: 2
+  square_scale: 1.3
+  padding: reflection
+  image_resize: bilinear_antialias
+  mask_resize: nearest
+  mask_binarization: nonzero
+
+backbone:
+  implementation: official_facebookresearch_dinov3
+  architecture: dinov3_vitb16
+  weights: LVD-1689M
+  frozen: true
+  block_one_based: 6
+  api_n: [5]
+  norm: true
+  reshape: false
+  extra_l2_normalization: false
+  feature_dtype_on_disk: float32
+
+features:
+  expected_patch_grid: [28, 28]
+  expected_tokens_per_frame: 784
+  expected_dimension: 768
+
+ffpp:
+  manipulations: [Deepfakes, Face2Face, FaceSwap, NeuralTextures]
+  compressions: [c23, c40]
+  split_files:
+    train: ../third_party/FaceForensics/dataset/splits/train.json
+    validation: ../third_party/FaceForensics/dataset/splits/val.json
+    test: ../third_party/FaceForensics/dataset/splits/test.json
+
+gallery:
+  split: train
+  source: original_sequences/youtube/c23
+  videos: 64
+  frame_per_video: middle
+  tokens_per_frame: 784
+  expected_tokens: 50176
+  include_all_patch_tokens: true
+
+knn:
+  engine: faiss.IndexFlatL2
+  exact_search: true
+  k: 20
+  faiss_output_is_squared_l2: true
+  take_square_root_before_scoring: true
+  distance_dtype: float32
+  query_batch_size: 4096
+
+scores:
+  distance_floor: 1.0e-12
+  cir_denominator_floor: 1.0e-6
+  higher_means_more_suspicious: true
+  primary: [SP_LID, CIR_LID, arithmetic_multi_neighbor]
+  secondary: [r1, mean_knn, r1_over_rk, LOF, local_PCA_PR]
+
+sampling:
+  validation_real_positions: [0.25, 0.50, 0.75]
+  validation_fake_positions: [0.25, 0.50, 0.75]
+  test_positions: [0.25, 0.50, 0.75]
+  gate_b_directed_names: 64
+
+threshold:
+  source: validation_real_c23_pooled_pixels
+  quantile: 0.99
+  numpy_method: linear
+  method_specific: true
+  target_clean_pixel_fpr: 0.01
+  frozen_for: [validation_fake, test_real, test_fake, c40]
+
+statistics:
+  unit: video
+  bootstrap: manipulation_stratified_video_cluster
+  bootstrap_replicates: 2000
+  confidence_level: 0.95
+
+gates:
+  alpha:
+    nuisance_variants: 10
+    replacement_fraction: 0.25
+    median_sp_ratio_min: 0.50
+    paired_difference_ci_lower_min: 0.0
+  beta:
+    contamination: [0.0, 0.1, 0.3, 0.5, 0.8]
+    token_positive_coverage: 0.25
+    slope_ci_upper_max: 0.0
+    auroc_drop_at_0_5_min: 0.05
+  synthetic:
+    relative_q_reduction_min: 0.10
+  b:
+    delta_pixel_ap_min: 0.02
+    paired_difference_ci_lower_min: 0.0
+  d:
+    delta_pixel_ap_min: 0.02
+    paired_difference_ci_lower_min: 0.0
+
+synthetic:
+  ambient_dimension: 64
+  latent_dimension: 4
+  seeds: 20
+  clean_queries: 2000
+  gallery_sizes: [2000, 5000, 10000]
+  densities: [sparse, uniform, concentrated]
+  radial_scales: [0.5, 1.0, 2.0]
+  deltas: [0.0, 0.25, 0.5, 1.0]
+  canonical:
+    gallery_size: 5000
+    density: uniform
+    radial_scale: 1.0
+
+sensitivity_only:
+  k: [10, 20, 40]
+  layer_one_based: [3, 6, 9, 12]
+  gallery_frames: [16, 32, 64, 128]
