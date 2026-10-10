@@ -13,6 +13,7 @@ from src.r0_semantic_relation.geometry import SemanticRegions
 from src.r0_semantic_relation.scoring import (
     broken_context_relation_score, local_difference_score, relation_score,
 )
+from src.r1_non_oracle_semantic_relation import METHODS, SEMANTIC_CONTROL, SEMANTIC_CONTROL_METHODS
 from src.r1_non_oracle_semantic_relation.dataset import assert_disjoint, component_map, select_roles
 from src.r1_non_oracle_semantic_relation.metrics import pixel_map, pixel_metrics, warp_real_to_fake
 from src.r1_non_oracle_semantic_relation.preprocessing import read_regions, resource_guard, save_regions
@@ -395,3 +396,213 @@ def test_report_does_not_call_small_uncertain_difference_random_error():
     assert '跨越/触及 0' in text
     assert '0.1000 pp' in text
     assert '优于所有' not in text
+
+
+def semantic_config(tmp_path) -> Config:
+    config = fixture_config(tmp_path)
+    supplement = load_config(PROJECT / 'configs/r1_non_oracle_semantic_relation_semantic_control_v1.yaml')
+    for field in ('namespace', 'version'):
+        config.data['protocol'][field] = supplement.require('protocol.' + field)
+    config.data['scoring'] = deepcopy(supplement.require('scoring'))
+    config.data['paths']['output_dir'] = str(tmp_path / 'r1_non_oracle_semantic_relation_semantic_control_test')
+    return config
+
+
+def test_semantic_profile_is_opt_in_and_requires_separate_output(tmp_path):
+    old = fixture_config(tmp_path)
+    new = semantic_config(tmp_path)
+    validate(old)
+    validate(new)
+    assert Run(old, Path(old.require('paths.output_dir'))).methods == METHODS
+    assert Run(new, Path(new.require('paths.output_dir'))).methods == SEMANTIC_CONTROL_METHODS
+    assert new.require('quality.min_evaluable_frame_fraction') == .50
+    new.data['paths']['output_dir'] = old.require('paths.output_dir')
+    with pytest.raises(ConfigError, match='own output namespace'):
+        validate(new)
+
+
+@pytest.mark.parametrize('change', ['missing_control', 'wrong_version', 'wrong_support'])
+def test_semantic_profile_cannot_silently_change_method_or_support(tmp_path, change):
+    config = semantic_config(tmp_path)
+    if change == 'missing_control':
+        config.data['scoring']['methods'] = list(METHODS)
+    elif change == 'wrong_version':
+        config.data['protocol']['version'] = 'R1-non-oracle-v1.0'
+    else:
+        config.data['scoring']['semantic_control_definition'] = 'fake_mask_support'
+    with pytest.raises(ConfigError):
+        validate(config)
+
+
+def test_semantic_local_preserves_old_maps_and_exact_equal_video_aggregation():
+    rng = np.random.default_rng(110)
+    regions = fixture_regions()
+    regions.token_valid[10] = 0  # Inside mouth, but excluded by relation's valid-token check.
+    permutation = context_derangement(20260930)
+    descriptors = [describe(rng.normal(size=(784, 768)).astype(np.float32), regions, permutation)
+                   for _ in range(4)]
+    query, a, b, c = descriptors
+    references = [('A', [a]), ('B', [b, c])]
+    old, old_audit = score_gallery(query, regions, references)
+    new, audit = score_gallery(query, regions, references, methods=SEMANTIC_CONTROL_METHODS)
+    assert tuple(old) == METHODS and tuple(new) == SEMANTIC_CONTROL_METHODS
+    for method in METHODS:
+        np.testing.assert_array_equal(new[method], old[method])
+    support = ((regions.token_mouth_core + regions.token_perioral_ring) > 0) & (regions.token_valid > 0)
+    np.testing.assert_array_equal(new[SEMANTIC_CONTROL][support], old['local_difference'][support])
+    assert np.all(new[SEMANTIC_CONTROL][~support] == 0)
+    assert new[SEMANTIC_CONTROL][10] == 0
+    assert not np.shares_memory(new[SEMANTIC_CONTROL], new['local_difference'])
+    assert np.any(new['local_difference'][~support] > 0)
+    assert audit['frames_per_video'] == old_audit['frames_per_video'] == {'A': 1, 'B': 2}
+    expected_local = (np.linalg.norm(query.unit_tokens - a.unit_tokens, axis=1).astype(np.float64)
+                      + (np.linalg.norm(query.unit_tokens - b.unit_tokens, axis=1).astype(np.float64)
+                         + np.linalg.norm(query.unit_tokens - c.unit_tokens, axis=1).astype(np.float64)) / 2) / 2
+    np.testing.assert_array_equal(new[SEMANTIC_CONTROL][support], expected_local.astype(np.float32)[support])
+    assert audit['semantic_local_control']['evaluation_domain'] == 'full_face_valid_domain'
+
+
+def test_semantic_comparisons_use_all_seeds_and_component_units(tmp_path):
+    config = semantic_config(tmp_path)
+    run = Run(config, Path(config.require('paths.output_dir')))
+    rows = []
+    for video, component, relation, semantic, local in [('A', 'c1', .70, .60, .50),
+                                                       ('B', 'c2', .80, .70, .60)]:
+        for seed in (11, 23, 37):
+            row = {'gallery_seed': seed, 'compression': 'c23', 'role': 'evaluation_fake',
+                   'video_id': video, 'component_id': component,
+                   **{f'{m}_ap': .55 for m in run.methods}}
+            row.update(relation_ap=relation, local_difference_semantic_ap=semantic, local_difference_ap=local)
+            rows.append(row)
+    averaged = average_seeds(rows, [11, 23, 37], run.methods)
+    report = statistics(averaged, run)
+    for name in ('relation_minus_local_semantic', 'local_semantic_minus_local'):
+        value = report['differences'][name]
+        assert value['point'] == pytest.approx(.1)
+        assert value['rows'] == 2 and value['groups'] == 2
+    rows[0]['local_difference_semantic_ap'] = None
+    incomplete = average_seeds(rows, [11, 23, 37], run.methods)
+    assert incomplete[0]['local_difference_semantic_ap'] is None
+    assert not incomplete[0]['evaluable']
+    assert statistics(incomplete, run)['differences']['relation_minus_local_semantic']['status'] == 'unavailable'
+
+
+def test_semantic_evaluation_rejects_legacy_score_archive(tmp_path):
+    from src.r1_non_oracle_semantic_relation.evaluation import load_maps
+    config = semantic_config(tmp_path)
+    run = Run(config, Path(config.require('paths.output_dir')))
+    path = run.path('maps/legacy.npz')
+    path.parent.mkdir(parents=True)
+    np.savez(path, **{m: np.zeros(784, np.float32) for m in METHODS})
+    with pytest.raises(ProtocolError, match='score-map methods'):
+        load_maps(run, {'score_path': run.relative(path)})
+
+
+@pytest.mark.parametrize('supplement', [False, True])
+def test_registered_methods_flow_through_calibration_scoring_evaluation_and_reports(tmp_path, monkeypatch, supplement):
+    """Synthetic cached inputs exercise stage wiring without models or raw videos."""
+    from src.cirlid.io import read_jsonl, save_array
+    from src.r1_non_oracle_semantic_relation import reference, evaluation, reporting
+
+    config = semantic_config(tmp_path) if supplement else fixture_config(tmp_path)
+    # Tiny synthetic roles only for this integration test; production defaults stay unchanged.
+    config.data['gallery'].update(videos=1, min_valid_videos=1)
+    config.data['calibration'].update(videos=1, min_valid_videos=1)
+    validate(config)
+    run = Run(config, Path(config.require('paths.output_dir')))
+    roles = {'components': {'100': 'gallery', '200': 'calibration', '001': 'evaluation', '002': 'evaluation'},
+             'evaluation_components': ['evaluation'], 'evaluation_ids': ['001', '002'],
+             'calibration_components': ['calibration'], 'calibration_ids': ['200'],
+             'gallery_pool_ids': ['100'], 'galleries': {str(seed): ['100'] for seed in (11, 23, 37)}}
+    run.freeze({'train_split_sha256': sha256_file(config.require('paths.split_files.train')), 'roles': roles})
+    regions = fixture_regions()
+    regions_path = run.path('geometry/synthetic.npz')
+    features_path = run.path('features/synthetic.npy')
+    rows = []
+    for role, video, component, compressions in (
+        ('gallery', '100', 'gallery', ('c23', 'c40')),
+        ('calibration', '200', 'calibration', ('c23',)),
+        ('evaluation_fake', '002_001', 'evaluation', ('c23', 'c40')),
+        ('evaluation_real', '001', 'evaluation', ('c23', 'c40')),
+    ):
+        for compression in compressions:
+            for index, fraction in enumerate((.25, .50, .75)):
+                row = {'sample_id': f'{role}/{compression}/{video}/p{fraction:.2f}',
+                       'status': 'ok', 'role': role, 'video_id': video, 'component_id': component,
+                       'compression': compression, 'fraction': fraction, 'frame_index': index,
+                       'label': int(role == 'evaluation_fake'),
+                       'regions_path': run.relative(regions_path), 'features_path': run.relative(features_path),
+                       'landmark_status': {'status': 'ok'},
+                       'region_areas': {n: int(getattr(regions, n).sum()) for n in ('mouth_core', 'perioral_ring', 'cheek_left', 'cheek_right', 'valid')},
+                       'region_token_weights': {n: float(getattr(regions, 'token_' + n).sum()) for n in ('mouth_core', 'perioral_ring', 'cheek_left', 'cheek_right', 'valid')}}
+                if role == 'evaluation_fake':
+                    row.update(paired_real_id=f'evaluation_real/{compression}/001/p{fraction:.2f}',
+                               strict_real_frame_match=True, source_id='002', target_id='001', source_group='pair')
+                rows.append(row)
+    with run.stage('geometry', ()) as stage:
+        save_regions(regions_path, regions)
+        for row in rows:
+            stage.record(row, [regions_path])
+        stage.finish(rows)
+    with run.stage('features', ('geometry',)) as stage:
+        save_array(features_path, np.ones((784, 768), np.float32))
+        for row in rows:
+            stage.record(row, [features_path])
+        stage.finish(rows)
+    mask_calls = []
+
+    def fake_truth(active_run, row):
+        assert active_run.path('score/complete.json').is_file()
+        mask_calls.append(row['sample_id'])
+        truth = np.zeros((448, 448), np.uint8)
+        truth[:224] = 1
+        return truth, {'mask_used_only_for_evaluation': True}
+
+    def paired_maps(active_run, fake, real, fake_maps, truth):
+        # Test the new method's paired-diagnostic wiring without requiring cv2.
+        # Independent-crop coordinate mapping has its own existing tests.
+        real_maps = evaluation.load_maps(active_run, real)
+        return ({m: fake_maps[m][regions.valid] for m in active_run.methods},
+                {m: real_maps[m][regions.valid] for m in active_run.methods}, truth[regions.valid])
+
+    monkeypatch.setattr(evaluation, 'load_fake_truth', fake_truth)
+    monkeypatch.setattr(evaluation, 'paired_maps', paired_maps)
+    reference.gallery(run)
+    reference.calibrate(run)
+    assert not mask_calls
+    threshold = read_json(run.path('calibrate/thresholds.json'))
+    assert all(t['status'] == 'ok' and set(t['thresholds']) == set(run.methods) for t in threshold.values())
+    reference.score(run)
+    assert not mask_calls
+    scored = run.read_stage('score')
+    assert all(r['status'] == 'ok' for r in scored)
+    for row in scored:
+        assert set(evaluation.load_maps(run, row)) == set(run.methods)
+    evaluation.evaluate(run)
+    assert len(mask_calls) == 18  # 3 frames × 2 compressions × 3 registered seeds.
+    for row in run.read_stage('evaluate'):
+        assert set(row['metrics']) == set(run.methods)
+        assert all(m['pixels'] == 448 * 448 for m in row['metrics'].values())
+        if row['role'] == 'evaluation_fake':
+            assert set(row['paired_metrics']) == set(run.methods)
+    for video in read_jsonl(run.path('evaluate/per_video_metrics.jsonl')):
+        assert set(video['metrics']) == set(run.methods)
+        assert all(m['pixels'] == 3 * 448 * 448 for m in video['metrics'].values())
+        assert all(m['fpr'] is not None for m in video['metrics'].values())
+        if video['role'] == 'evaluation_fake':
+            assert set(video['paired_metrics']) == set(run.methods)
+    reporting.finalize(run)
+    summary = read_json(run.path('finalize/summary.json'))
+    assert summary['methods'] == list(run.methods)
+    assert summary['decision']['decision'] == 'PARTIAL_PASS_DIAGNOSTIC'
+    csv_header = run.path('finalize/all_seed_video_metrics.csv').read_text().splitlines()[0]
+    markdown = run.path('finalize/analysis_report.md').read_text()
+    if supplement:
+        assert 'local_difference_semantic_ap' in csv_header
+        assert 'relation_minus_local_semantic' in markdown and 'local_semantic_minus_local' in markdown
+        diagnostic = read_json(run.path('finalize/semantic_control_diagnostic.json'))
+        assert diagnostic['enabled'] and not diagnostic['c23_relation_increment_supported']
+        assert 'local_difference_semantic' in summary['c40_minus_c23_paired']
+    else:
+        assert not run.path('finalize/semantic_control_diagnostic.json').exists()
+        assert 'local_difference_semantic' not in csv_header

@@ -11,6 +11,7 @@ from typing import Iterator
 
 from src.cirlid.config import Config, ConfigError, config_digest, load_config, resolve_config_path
 from src.cirlid.io import read_json, sha256_file, write_json, write_jsonl
+from . import SEMANTIC_CONTROL, methods_for
 
 
 class ProtocolError(ValueError):
@@ -18,8 +19,6 @@ class ProtocolError(ValueError):
 
 
 FIXED = {
-    'protocol.namespace': 'r1_non_oracle_semantic_relation_v1',
-    'protocol.version': 'R1-non-oracle-v1.0',
     'protocol.split': 'train', 'protocol.manipulation': 'Face2Face',
     'protocol.compressions': ['c23', 'c40'],
     'protocol.official_test_locked': True, 'protocol.oracle_paired_target_real': False,
@@ -64,6 +63,7 @@ FIXED = {
 
 
 def validate(config: Config) -> None:
+    methods = methods_for(config)
     problems = [f'{key}: expected {value!r}, got {config.get(key)!r}'
                 for key, value in FIXED.items()
                 if type(config.get(key)) is not type(value) or config.get(key) != value]
@@ -112,6 +112,9 @@ def validate(config: Config) -> None:
     root = resolve_config_path(config, config.require('paths.output_dir')).resolve()
     if not root.name.startswith('r1_non_oracle_') or root.is_symlink():
         raise ConfigError('R1 output must be a dedicated r1_non_oracle_* directory')
+    if SEMANTIC_CONTROL in methods and not root.name.startswith(
+            'r1_non_oracle_semantic_relation_semantic_control_'):
+        raise ConfigError('semantic-control supplement requires its own output namespace')
     project = Path(__file__).resolve().parents[2]
     for protected in (project / 'src', project / 'configs',
                       resolve_config_path(config, config.require('paths.ffpp_root'))):
@@ -150,6 +153,10 @@ class Run:
     root: Path
     resume: bool = False
 
+    @property
+    def methods(self) -> tuple[str, ...]:
+        return methods_for(self.config)
+
     @classmethod
     def open(cls, path: str | Path, *, resume: bool = False) -> 'Run':
         config = load_config(path)
@@ -172,6 +179,8 @@ class Run:
         write_json(self.path('freeze_receipt.json'), {
             **payload, 'config': self.config.data, 'config_digest': config_digest(self.config),
             'source_hashes': source_hashes(), 'git_commit': None,
+            'methods': list(self.methods),
+            'semantic_control_origin': self.config.get('scoring.semantic_control_origin'),
             'environment_versions': environment_versions(),
             'git_commit_status': 'unavailable_not_inferred', 'official_test_locked': True,
             'paired_real_used_for_gallery_or_fake_scoring': False,

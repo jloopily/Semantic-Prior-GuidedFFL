@@ -1,0 +1,108 @@
+# R1 supplement: same-support local control; its own output namespace.
+protocol:
+  namespace: r1_non_oracle_semantic_relation_semantic_control_v1
+  version: R1-non-oracle-semantic-control-v1.0
+  split: train
+  manipulation: Face2Face
+  compressions: [c23, c40]
+  seed: 20260930
+  bootstrap_seed: 20260930
+  official_test_locked: true
+  oracle_paired_target_real: false
+  deployable_detector: false
+holdout:
+  fraction: 0.30
+  seed: 20260930
+paths:
+  ffpp_root: ../data/raw/ffpp
+  split_files:
+    train: ../third_party/FaceForensics/dataset/splits/train.json
+  dinov3_repo: ../dinov3_dl/repo/dinov3
+  dinov3_weights: ../weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
+  output_dir: ../results/r1_non_oracle_semantic_relation_semantic_control_v1
+input:
+  size: 448
+  color: RGB
+  imagenet_mean: [0.485, 0.456, 0.406]
+  imagenet_std: [0.229, 0.224, 0.225]
+  test_time_augmentation: false
+face_crop:
+  detector: dlib_hog
+  detector_source: each_input_frame_independently
+  upsample_primary: 1
+  upsample_retry: 2
+  square_scale: 1.3
+  padding: reflection
+  image_resize: bilinear_antialias
+  mask_resize: nearest
+  mask_binarization: nonzero
+backbone:
+  implementation: official_facebookresearch_dinov3
+  architecture: dinov3_vitb16
+  weights: LVD-1689M
+  frozen: true
+  block_one_based: 6
+  api_n: [5]
+  norm: true
+  reshape: false
+  extra_l2_normalization: false
+  feature_dtype_on_disk: float32
+features:
+  expected_patch_grid: [28, 28]
+  expected_tokens_per_frame: 784
+  expected_dimension: 768
+sampling:
+  frame_fractions: [0.25, 0.50, 0.75]
+gallery:
+  videos: 64
+  seeds: [11, 23, 37]
+  source: original_train_only
+  correspondence: same_normalized_independent_crop_token_index
+  aggregation: mean_frame_distances_then_equal_video_mean
+  min_valid_frames_per_video: 3
+  min_valid_videos: 32
+  missing_policy: record_no_replacement
+calibration:
+  videos: 32
+  seed: 20261002
+  source: component_disjoint_train_real_c23
+  quantile: 0.99
+  numpy_method: linear
+  transfer_to_c40: true
+  min_valid_videos: 16
+mediapipe:
+  asset_path: ../assets/mediapipe/face_landmarker.task
+  asset_sha256: 64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff
+  num_faces: 2
+  min_face_detection_confidence: 0.5
+  min_face_presence_confidence: 0.5
+  min_tracking_confidence: 0.5
+  multi_face: fail_no_fallback
+regions:
+  perioral_ring_radius: 12
+  geometry_source: each_input_frame_independently
+  empty_region: record_failure_do_not_substitute_full_face
+scoring:
+  methods: [relation, local_difference, position_template, broken_context, local_difference_semantic]
+  semantic_control_definition: copy_aggregated_local_then_zero_outside_query_relation_token_support
+  semantic_control_origin: diagnostic_selected_after_R0_review_before_supplement_run
+statistics:
+  primary_domain: full_face_valid_domain
+  secondary_domains: [mouth_core, perioral_ring, cheek_left, cheek_right]
+  bootstrap_replicates: 2000
+  grouping: source_video_connected_component
+  practical_margin_ap: 0.01
+  practical_margin_origin: user_selected_after_R0_not_an_equivalence_test
+  paired_real_comparison: warp_independent_real_score_to_fake_source_coordinates
+quality:
+  min_evaluable_frame_fraction: 0.50
+  coverage_origin: user_selected_after_R0_80_percent_gate
+  min_evaluable_frames_per_video: 3
+  min_independent_components: 5
+runtime:
+  device: cuda
+  batch_size: 1
+  threads: 1
+  progress_every: 100
+  minimum_cpu_cores: 2
+  minimum_memory_gib: 4

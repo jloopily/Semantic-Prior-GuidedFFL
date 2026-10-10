@@ -145,3 +145,38 @@ finalize/source_group_metrics.csv
 完成文件阅读、共享 API 签名静态核对、数据流审阅和旧文件 SHA-256 核对。旧 R0 runner、R0 模块、审阅基线覆盖的 shared 文件和 R0 配置全部与静态基线一致。
 
 **未运行代码、未做 Python 编译/语法检查、未执行测试，因此不能声称测试通过或实际端到端成功。** 新代码应先在合适实验环境中执行测试/小范围验证，再正式运行。尚无 R1 AP、CI、decision 或 IEEE SPL 录用结论。
+
+## 7. 2026-10-10 补充：相同语义区域的 local 对照
+
+新增配置：`configs/r1_non_oracle_semantic_relation_semantic_control_v1.yaml`。
+
+旧配置仍选择原四方法；新配置选择原四方法加 `local_difference_semantic`。新配置使用独立 namespace/version，输出到 `results/r1_non_oracle_semantic_relation_semantic_control_v1/`。不改变默认入口配置；运行补充版本时须显式指定新配置。新配置保留 50% 门槛、采样、图库 seed 和原评分公式。
+
+`local_difference_semantic` 的构造步骤：
+
+1. 用原 local 的相同 query、reference frames 和视频等权聚合生成 local token 分数。
+2. 复制聚合后的数组，不重算距离、不改变图库权重。
+3. 使用与 relation 完全相同的 query token 支持：嘴部/口周权重大于零且 `token_valid > 0`；其余 token 置零。
+4. 使用相同的 28×28→448×448 双线性投影，边界可能软化。
+5. 与其他方法在相同全脸 valid 像素上评价，逐区域指标仍是次级结果。
+
+新方法有独立的 c23 clean-real 校准阈值，并原值迁移到 c40。已接入 score 文件、单帧/视频 AP/F1/FPR、paired-real 后置诊断、区域指标、所有 seed、c40−c23 比较及 CSV/Markdown/JSON。评估阶段检查 score 文件的方法集合必须与冻结配置一致，防止把四方法旧文件误当五方法输入。
+
+新增两项组件 bootstrap 比较：
+
+- `relation_minus_local_semantic`：相同区域限制下，关系描述相对 local 的增量。
+- `local_semantic_minus_local`：给 local 加上区域限制后的指标变化。
+
+除既有汇总外，新版本输出 `finalize/semantic_control_diagnostic.json`，记录上述差值、置信区间、各压缩和各 seed 结果。原 PASS/PARTIAL/FAIL 规则保持原定义，新增诊断单列：原 decision 即使为 PASS，也不能替代“是否超过同区域 local”的结果。新增对照是在审阅 R0 后提出、补充运行前固定，沿用描述性 95% CI。
+
+以后在合适实验机器使用：
+
+```bash
+python -m src.run_r1 --config configs/r1_non_oracle_semantic_relation_semantic_control_v1.yaml --stage all --allow-heavy
+```
+
+断点续跑仍使用同一配置加 `--resume`。修改后的源码不能用于续跑旧源码冻结的 run；若有旧 run，应保留它的对应源码快照，补充实验使用新目录从 prepare 开始。
+
+新增测试用例覆盖：旧配置四方法兼容、新配置五方法与独立输出、区域内 local 数值/区域外置零、原四种 score 不变、视频等权、全部 seed 配对汇总、旧 score 文件拒绝，以及合成缓存上的 gallery→calibrate→score→evaluate→finalize 连通性。合成测试没有使用真实视频或模型资产，不能替代正式实验环境验证。
+
+**本次只完成代码编辑、文件读取及静态核对；按用户要求未运行 Python、pytest、编译或模型，未连接服务器。没有新增实验结果。**

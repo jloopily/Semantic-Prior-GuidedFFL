@@ -8,7 +8,6 @@ import numpy as np
 from src.cirlid.ffpp import FFPPIntegrationUnavailable, decode_mask, probe_video
 from src.cirlid.geometry import BBox, crop_and_resize, map_bbox
 from src.cirlid.io import read_json, save_array, write_jsonl
-from . import METHODS
 from .dataset import check_raw, mask_path
 from .metrics import pixel_map, pixel_metrics, warp_real_to_fake
 from .preprocessing import failure, read_array, read_regions
@@ -17,7 +16,9 @@ from .protocol import ProtocolError, Run, key
 
 def load_maps(run: Run, row: dict) -> dict[str, np.ndarray]:
     with np.load(run.path(row['score_path']), allow_pickle=False) as archive:
-        return {method: pixel_map(archive[method]) for method in METHODS}
+        if set(archive.files) != set(run.methods):
+            raise ProtocolError('score-map methods differ from the frozen R1 profile')
+        return {method: pixel_map(archive[method]) for method in run.methods}
 
 
 def load_fake_truth(run: Run, row: dict) -> tuple[np.ndarray, dict]:
@@ -47,7 +48,7 @@ def paired_maps(run: Run, fake: dict, real: dict, fake_maps: dict[str, np.ndarra
     real_maps = load_maps(run, real)
     warped = {}
     common = fake_regions.valid.copy()
-    for method in METHODS:
+    for method in run.methods:
         warped[method], overlap = warp_real_to_fake(real_maps[method], real_regions.valid, fake, real)
         common &= overlap
     if not common.any():
@@ -103,7 +104,7 @@ def evaluate(run: Run) -> None:
                         method: pixel_metrics(value[domain], truth[domain], method_thresholds.get(method))
                         for method, value in maps.items()}
                 row['evaluable'] = bool(original['role'] == 'evaluation_fake'
-                                        and all(row['metrics'][m]['ap'] is not None for m in METHODS))
+                                        and all(row['metrics'][m]['ap'] is not None for m in run.methods))
                 row['scored_and_mask_evaluated'] = True
                 row['empty_valid_mask'] = not bool(truth[regions.valid].any())
                 row['full_valid_mask'] = bool(truth[regions.valid].all())
@@ -120,7 +121,7 @@ def evaluate(run: Run) -> None:
                         try:
                             fmaps, rmaps, common_truth = paired_maps(run, original, real, maps, truth)
                             row['paired_metrics'] = {}
-                            for method in METHODS:
+                            for method in run.methods:
                                 fake_metric = pixel_metrics(fmaps[method], common_truth, method_thresholds.get(method))
                                 real_metric = pixel_metrics(rmaps[method], common_truth, method_thresholds.get(method))
                                 row['paired_metrics'][method] = {'fake': fake_metric, 'real_on_fake_mask': real_metric,
@@ -164,7 +165,7 @@ def pool_video(run: Run, rows: list[dict], score_rows: dict[str, dict], threshol
                   full_valid_mask_frames=sum(bool(r.get('full_valid_mask')) for r in rows),
                   frame_coverage_ok=coverage, status='ok' if coverage else 'insufficient_frame_coverage',
                   calibration_status=threshold_record['status'], metrics={}, region_metrics={}, paired_metrics={})
-    for method in METHODS:
+    for method in run.methods:
         output[f'{method}_ap'] = None
         output[f'{method}_f1'] = None
         output[f'{method}_fpr'] = None
@@ -180,7 +181,7 @@ def pool_video(run: Run, rows: list[dict], score_rows: dict[str, dict], threshol
     regions = [read_regions(run, row['regions_path']) for row in good]
     frame_maps = [load_maps(run, row) for row in good]
     method_thresholds = threshold_record.get('thresholds', {})
-    for method in METHODS:
+    for method in run.methods:
         values = np.concatenate([maps[method][r.valid] for maps, r in zip(frame_maps, regions)])
         labels = np.concatenate([truth[r.valid] for truth, r in zip(truths, regions)])
         metric = pixel_metrics(values, labels, method_thresholds.get(method))
@@ -194,20 +195,20 @@ def pool_video(run: Run, rows: list[dict], score_rows: dict[str, dict], threshol
         labels = np.concatenate([truth[domain] for truth, domain in zip(truths, domains)])
         output['region_metrics'][region] = {
             method: pixel_metrics(np.concatenate([maps[method][domain] for maps, domain in zip(frame_maps, domains)]),
-                                  labels, method_thresholds.get(method)) for method in METHODS}
+                                  labels, method_thresholds.get(method)) for method in run.methods}
     if first['role'] == 'evaluation_fake' and all(r.get('paired_comparison_status') == 'ok' for r in good):
-        fparts = {m: [] for m in METHODS}
-        rparts = {m: [] for m in METHODS}
+        fparts = {m: [] for m in run.methods}
+        rparts = {m: [] for m in run.methods}
         labels = []
         for row, maps, truth in zip(good, frame_maps, truths):
             real = score_rows[f'seed{row["gallery_seed"]}/{row["paired_real_id"]}']
             fmaps, rmaps, common_truth = paired_maps(run, row, real, maps, truth)
             labels.append(common_truth)
-            for method in METHODS:
+            for method in run.methods:
                 fparts[method].append(fmaps[method])
                 rparts[method].append(rmaps[method])
         pooled_truth = np.concatenate(labels)
-        for method in METHODS:
+        for method in run.methods:
             fake_metric = pixel_metrics(np.concatenate(fparts[method]), pooled_truth, method_thresholds.get(method))
             real_metric = pixel_metrics(np.concatenate(rparts[method]), pooled_truth, method_thresholds.get(method))
             output['paired_metrics'][method] = {'fake': fake_metric, 'real_on_fake_mask': real_metric,
@@ -218,5 +219,5 @@ def pool_video(run: Run, rows: list[dict], score_rows: dict[str, dict], threshol
         real_template_ap = output['paired_metrics']['position_template']['real_on_fake_mask']['ap']
         output['relation_minus_real_template_ap'] = fake_ap - real_template_ap if fake_ap is not None and real_template_ap is not None else None
         output['paired_common_pixels'] = len(pooled_truth)
-    output['evaluable'] = all(output[f'{m}_ap'] is not None for m in METHODS)
+    output['evaluable'] = all(output[f'{m}_ap'] is not None for m in run.methods)
     return output

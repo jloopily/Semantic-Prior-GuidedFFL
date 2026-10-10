@@ -14,7 +14,7 @@ import numpy as np
 
 from src.r0_semantic_relation.geometry import SemanticRegions
 from src.r0_semantic_relation.scoring import _relation_vectors, _unit, position_template_score
-from . import METHODS
+from . import METHODS, SEMANTIC_CONTROL, SEMANTIC_CONTROL_METHODS
 
 
 @dataclass(frozen=True)
@@ -59,14 +59,19 @@ def pair_distances(query: Descriptor, reference: Descriptor) -> dict[str, np.nda
 
 
 def score_gallery(query: Descriptor, regions: SemanticRegions,
-                  references: Iterable[tuple[str, Iterable[Descriptor]]]) -> tuple[dict[str, np.ndarray], dict]:
+                  references: Iterable[tuple[str, Iterable[Descriptor]]], *,
+                  methods: tuple[str, ...] = METHODS) -> tuple[dict[str, np.ndarray], dict]:
     """Streaming distances: mean over each video's frames, then mean over videos.
 
     Never distance to an averaged descriptor, nearest-reference selection, or
     per-query selection. References must have been role-checked by the caller.
     """
+    if methods not in (METHODS, SEMANTIC_CONTROL_METHODS):
+        raise ValueError('unsupported R1 method registry')
+    # The supplement is derived from the final local map; no second reference
+    # traversal, distance calculation, or change in reference/video weights.
     totals = {name: np.zeros(784, dtype=np.float64)
-              for name in METHODS if name != 'position_template'}
+              for name in ('relation', 'local_difference', 'broken_context')}
     counts: dict[str, int] = {}
     zero_distances = {name: 0 for name in totals}
     for video_id, frames in references:
@@ -92,7 +97,21 @@ def score_gallery(query: Descriptor, regions: SemanticRegions,
     maps['relation'][~support] = 0
     maps['broken_context'][~support] = 0
     maps['position_template'], _ = position_template_score(regions)
+    if SEMANTIC_CONTROL in methods:
+        maps[SEMANTIC_CONTROL] = maps['local_difference'].copy()
+        maps[SEMANTIC_CONTROL][~support] = 0
+    maps = {name: maps[name] for name in methods}
     return maps, {'gallery_videos': len(counts), 'frames_per_video': counts,
+                  'methods': list(methods),
+                  'semantic_local_control': {
+                      'enabled': SEMANTIC_CONTROL in methods,
+                      'base_method': 'local_difference',
+                      'derivation': 'copy_aggregated_local_then_zero_outside_query_relation_token_support',
+                      'same_reference_frames_and_weights': True,
+                      'same_token_support_as_relation': True,
+                      'mask_used': False,
+                      'evaluation_domain': 'full_face_valid_domain',
+                  },
                   'aggregation': 'mean_frame_distances_then_equal_video_mean',
                   'correspondence': 'same_normalized_independent_crop_token_index',
                   'score_support_tokens': int(support.sum()),

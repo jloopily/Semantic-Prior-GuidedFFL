@@ -9,7 +9,6 @@ import numpy as np
 
 from src.cirlid.io import read_json, save_array, write_json
 from .metrics import pixel_map as flatten_map
-from . import METHODS
 from .dataset import assert_disjoint
 from .preprocessing import failure, read_array, read_regions
 from .protocol import ProtocolError, Run, key
@@ -127,7 +126,7 @@ def query_score(run: Run, row: dict, index: dict,
     if descriptor is None:
         descriptor = describe(read_array(run, row['features_path']), regions,
                               context_derangement(run.config.require('protocol.seed')))
-    return score_gallery(descriptor, regions, references(run, index, row))
+    return score_gallery(descriptor, regions, references(run, index, row), methods=run.methods)
 
 
 def calibrate(run: Run) -> None:
@@ -172,6 +171,7 @@ def calibrate(run: Run) -> None:
             eligible = {video: frames for video, frames in good.items()
                         if len(frames) == 3 and len({r['frame_index'] for r, _ in frames}) == 3}
             output = {'sample_id': sample_id, 'gallery_seed': seed,
+                      'methods': list(run.methods),
                       'status': 'ok' if len(eligible) >= run.config.require('calibration.min_valid_videos') else 'failed',
                       'thresholds': {}, 'valid_video_ids': sorted(eligible),
                       'generated_frames': len(source), 'scored_frames': sum(len(v) for v in good.values()),
@@ -188,7 +188,7 @@ def calibrate(run: Run) -> None:
             if output['status'] == 'ok':
                 total = sum(int(read_regions(run, row['regions_path']).valid.sum())
                             for frames in eligible.values() for row, _ in frames)
-                for method in METHODS:
+                for method in run.methods:
                     pool_path = run.path(f'calibrate/pools/{seed}_{method}.npy')
                     pool_path.parent.mkdir(parents=True, exist_ok=True)
                     pool = np.lib.format.open_memmap(pool_path, mode='w+', dtype=np.float32, shape=(total,))
